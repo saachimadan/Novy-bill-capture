@@ -58,6 +58,37 @@ const S = {
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const toBase64 = (f) => new Promise((res,rej) => { const r=new FileReader(); r.onload=e=>res(e.target.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(f); });
+
+// Compress and resize image before sending — keeps it under 4MB
+const compressImage = (file) => new Promise((res, rej) => {
+  if (file.type === "application/pdf") {
+    toBase64(file).then(b64 => res({ b64, mediaType: "application/pdf" })).catch(rej);
+    return;
+  }
+  const MAX_PX = 1600;
+  const QUALITY = 0.82;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > MAX_PX || height > MAX_PX) {
+        if (width > height) { height = Math.round(height * MAX_PX / width); width = MAX_PX; }
+        else { width = Math.round(width * MAX_PX / height); height = MAX_PX; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL("image/jpeg", QUALITY);
+      res({ b64: dataUrl.split(",")[1], mediaType: "image/jpeg" });
+    };
+    img.onerror = rej;
+    img.src = e.target.result;
+  };
+  reader.onerror = rej;
+  reader.readAsDataURL(file);
+});
 const calcTotal = (qty,rate,tax) => { const q=parseFloat(qty)||0,r=parseFloat(rate)||0,t=parseFloat(tax)||0; return q&&r?Math.round(q*r*(1+t)*100)/100:""; };
 const newItem   = () => ({ id:Date.now()+Math.random(), item_name:"", manufacturer:"", qty:"", unit:"PCS", rate:"", tax_pct:"0.05", total:"", scratched_out:false, modified:false, modification_note:"" });
 const fmt       = (n) => n!=null&&n!==""?`₹${parseFloat(n).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2})}`:"—";
@@ -178,12 +209,13 @@ export default function BillCaptureApp() {
     setStep("processing"); setError("");
     try {
       setMsg("Reading your bill…");
-      const b64 = await toBase64(image.file);
+      setMsg("Compressing image…");
+      const { b64: compressedB64, mediaType: compressedType } = await compressImage(image.file);
       setMsg("Extracting invoice details…");
       const resp = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: b64, mediaType: image.file.type || "image/jpeg" }),
+        body: JSON.stringify({ imageBase64: compressedB64, mediaType: compressedType }),
       });
       if (!resp.ok) { const e = await resp.json(); throw new Error(e.error || `HTTP ${resp.status}`); }
       setMsg("Organising fields…");
